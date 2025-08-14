@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Simple WMS</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 900px; margin: 20px auto; }
+  h1 { color: #0ea5a4; }
+  nav button {
+    background: #0ea5a4; color: white; border: none; padding: 8px 12px;
+    margin-right: 6px; cursor: pointer; border-radius: 4px;
+  }
+  nav button.active { background: #047d7a; }
+  section { border: 1px solid #ddd; border-radius: 6px; padding: 16px; margin-top: 12px; }
+  label { display: block; margin: 8px 0 4px; }
+  input, select, textarea { width: 100%; padding: 6px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th, td { border: 1px solid #ddd; padding: 6px; text-align: left; }
+  button.small { padding: 4px 8px; font-size: 0.9em; }
+  .flex-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .flex-row > * { flex: 1; min-width: 120px; }
+  .error { color: red; }
+</style>
+</head>
+<body>
+
+<h1>Simple Warehouse Management System (WMS)</h1>
+
+<nav>
+  <button id="nav-dashboard" class="active">Dashboard</button>
+  <button id="nav-items">Items</button>
+  <button id="nav-locations">Locations</button>
+  <button id="nav-pos">Purchase Orders</button>
+  <button id="nav-transfers">Transfers</button>
+  <button id="nav-accounting">Accounting</button>
+</nav>
+
+<section id="content"></section>
+
+<script>
+(() => {
+  const STORAGE_KEY = "simple_wms_data";
+  let data = JSON.parse(localStorage.getItem(STORAGE_KEY)) || {
+    items: [], locations: [], purchaseOrders: [], transfers: []
+  };
+  const saveData = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  const uid = () => 'id_' + Math.random().toString(36).slice(2, 9);
+
+  const content = document.getElementById('content');
+  const navButtons = {
+    dashboard: document.getElementById('nav-dashboard'),
+    items: document.getElementById('nav-items'),
+    locations: document.getElementById('nav-locations'),
+    pos: document.getElementById('nav-pos'),
+    transfers: document.getElementById('nav-transfers'),
+    accounting: document.getElementById('nav-accounting')
+  };
+  let currentView = 'dashboard';
+
+  function switchView(view) {
+    currentView = view;
+    Object.values(navButtons).forEach(btn => btn.classList.remove('active'));
+    navButtons[view].classList.add('active');
+    render();
+  }
+
+  function renderDashboard() {
+    const totalItems = data.items.length;
+    const totalLocations = data.locations.length;
+    const openPOs = data.purchaseOrders.filter(po => po.status === 'Open').length;
+    content.innerHTML = `
+      <h2>Dashboard</h2>
+      <p>Total Items: <strong>${totalItems}</strong></p>
+      <p>Total Locations (Branches): <strong>${totalLocations}</strong></p>
+      <p>Open Purchase Orders: <strong>${openPOs}</strong></p>
+    `;
+  }
+
+  function renderItems() {
+    let html = `
+      <h2>Items</h2>
+      <form id="item-form">
+        <div class="flex-row">
+          <input type="text" id="item-sku" placeholder="SKU (required)" required />
+          <input type="text" id="item-name" placeholder="Name (required)" required />
+        </div>
+        <textarea id="item-description" placeholder="Description"></textarea>
+        <button type="submit">Add Item</button>
+      </form>
+      <table>
+        <thead><tr><th>SKU</th><th>Name</th><th>Description</th><th>Qty by Location</th><th>Actions</th></tr></thead>
+        <tbody>
+    `;
+    data.items.forEach(item => {
+      const qtySummary = Object.entries(item.quantityByLocation || {})
+        .map(([loc, qty]) => `${loc}: ${qty}`)
+        .join(', ') || '0';
+      html += `<tr>
+        <td>${item.sku}</td>
+        <td>${item.name}</td>
+        <td>${item.description || ''}</td>
+        <td>${qtySummary}</td>
+        <td>
+          <button class="small" data-action="edit" data-id="${item.id}">Edit</button>
+          <button class="small" data-action="delete" data-id="${item.id}">Delete</button>
+        </td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    content.innerHTML = html;
+
+    document.getElementById('item-form').onsubmit = e => {
+      e.preventDefault();
+      const sku = e.target['item-sku'].value.trim();
+      const name = e.target['item-name'].value.trim();
+      const description = e.target['item-description'].value.trim();
+      if (!sku || !name) return alert('SKU and Name are required');
+      data.items.push({ id: uid(), sku, name, description, quantityByLocation: {} });
+      saveData();
+      renderItems();
+    };
+
+    content.querySelectorAll('button.small').forEach(btn => {
+      btn.onclick = () => {
+        const id = btn.getAttribute('data-id');
+        const action = btn.getAttribute('data-action');
+        if (action === 'delete') {
+          if (confirm('Delete this item?')) {
+            data.items = data.items.filter(i => i.id !== id);
+            saveData();
+            renderItems();
+          }
+        } else if (action === 'edit') {
+          editItem(id);
+        }
+      };
+    });
+  }
+
+  function editItem(id) {
+    const item = data.items.find(i => i.id === id);
+    if (!item) return alert('Item not found');
+    content.innerHTML = `
+      <h3>Edit Item</h3>
+      <form id="edit-item-form">
+        <label>SKU (required)</label>
+        <input type="text" id="edit-item-sku" value="${item.sku}" required />
+        <label>Name (required)</label>
+        <input type="text" id="edit-item-name" value="${item.name}" required />
+        <label>Description</label>
+        <textarea id="edit-item-description">${item.description || ''}</textarea>
+        <h4>Quantities by Location</h4>
+        ${data.locations.length === 0 ? '<p><em>No locations created yet.</em></p>' : ''}
+        <div>
+          ${data.locations.map(loc => {
+            const qty = item.quantityByLocation?.[loc.id] || 0;
+            return `<label>${loc.id} - ${loc.name}</label>
+                    <input type="number" min="0" id="qty-${loc.id}" value="${qty}" />`;
+          }).join('')}
+        </div>
+        <button type="submit">Save</button>
+        <button type="button" id="cancel-edit">Cancel</button>
+      </form>
+    `;
+    document.getElementById('cancel-edit').onclick = () => renderItems();
+    document.getElementById('edit-item-form').onsubmit = e => {
+      e.preventDefault();
+      const sku = e.target['edit-item-sku'].value.trim();
+      const name = e.target['edit-item-name'].value.trim();
+      const description = e.target['edit-item-description'].value.trim();
+      if (!sku || !name) return alert('SKU and Name are required');
+      const qtyByLoc = {};
+      data.locations.forEach(loc => {
+        const val = parseInt(e.target[`qty-${loc.id}`].value);
+        if (!isNaN(val) && val >= 0) qtyByLoc[loc.id] = val;
+      });
+      item.sku = sku;
+      item.name = name;
+      item.description = description;
+      item.quantityByLocation = qtyByLoc;
+      saveData();
+      renderItems();
+    };
+  }
+
+  function renderLocations() {
+    let html = `
+      <h2>Locations (Branches)</h2>
+      <form id="location-form">
+        <div class="flex-row">
+          <input type="text" id="location-id" placeholder="Code (e.g. ALM)" maxlength="3" required />
+          <input type="text" id="location-name" placeholder="Name (required)" required />
+        </div>
+        <button type="submit">Add Location</button>
+      </form>
+      <table>
+        <thead><tr><th>Code</th><th>Name</th><th>Actions</th></tr></thead>
+        <tbody>
+    `;
+    data.locations.forEach(loc => {
+      html += `<tr>
+        <td>${loc.id}</td>
+        <td>${loc.name}</td>
+        <td>
+          <button class="small" data-action="edit" data-id="${loc.id}">Edit</button>
+          <button class="small" data-action="delete" data-id="${loc.id}">Delete</button>
+        </td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    content.innerHTML = html;
+
+    document.getElementById('location-form').onsubmit = e => {
+      e.preventDefault();
+      const id = e.target['location-id'].value.trim().toUpperCase();
+      const name = e.target['location-name'].value.trim();
+      if (!id || !name) return alert('Code and Name required');
+      if (data.locations.find(l => l.id === id)) return alert('Location code already exists');
+      data.locations.push({ id, name });
+      saveData();
+      renderLocations();
+    };
+
+    content.querySelectorAll('button.small').forEach(btn => {
+      btn.onclick = () => {
+        const id = btn.getAttribute('data-id');
+        const action = btn.getAttribute('data-action');
+        if (action === 'delete') {
+          if (confirm('Delete this location? Quantities for this location will be removed from all items.')) {
+            data.locations = data.locations.filter(l => l.id !== id);
+            data.items.forEach(item => {
+              if (item.quantityByLocation && item.quantityByLocation[id]) {
+                delete item.quantityByLocation[id];
+              }
+            });
+            saveData();
+            renderLocations();
+          }
+        } else if (action === 'edit') {
+          editLocation(id);
+        }
+      };
+    });
+  }
+
+  function editLocation(id) {
+    const loc = data.locations.find(l => l.id === id);
+    if (!loc) return alert('Location not found');
+    content.innerHTML = `
+      <h3>Edit Location</h3>
+      <form id="edit-location-form">
+        <label>Code</label>
+        <input type="text" disabled value="${loc.id}" />
+        <label>Name (required)</label>
+        <input type="text" id="edit-location-name" value="${loc.name}" required />
+        <button type="submit">Save</button>
+        <button type="button" id="cancel-edit-location">Cancel</button>
+      </form>
+    `;
+    document.getElementById('cancel-edit-location').onclick = () => renderLocations();
+    document.getElementById('edit-location-form').onsubmit = e => {
+      e.preventDefault();
+      const name = e.target['edit-location-name'].value.trim();
+      if (!name) return alert('Name is required');
+      loc.name = name;
+      saveData();
+      renderLocations();
+    };
+  }
+
+  function renderPOs() {
+    let html = `
+      <h2>Purchase Orders</h2>
+      <form id="po-form">
+        <label>Vendor (required)</label>
+        <input type="text" id="po-vendor" required />
+        <label>Branch (required)</label>
+        <select id="po-branch" required>
+          ${data.locations.map(l => `<option value="${l.id}">${l.id} - ${l.name}</option>`).join('')}
+        </select>
+        <label>Date</label>
+        <input type="date" id="po-date" value="${new Date().toISOString().slice(0,10)}" />
+        <button type="submit">Create PO</button>
+      </form>
+      <table>
+        <thead><tr><th>ID</th><th>Vendor</th><th>Branch</th><th>Date</th><th>Status</th><th>Total</th><th>Actions</th></tr></thead>
+        <tbody>
+    `;
+    data.purchaseOrders.forEach(po => {
+      const total = po.lines?.reduce((sum, l) => sum + l.qty * l.unitCost, 0) || 0;
+      html += `<tr>
+        <td>${po.id}</td>
+        <td>${po.vendor}</td>
+        <td>${po.branch}</td>
+        <td>${po.date}</td>
+        <td>${po.status}</td>
+        <td>$${total.toFixed(2)}</td>
+        <td>
+          <button class="small" data-action="open" data-id="${po.id}">Open</button>
+          <button class="small" data-action="receive" data-id="${po.id}">Receive</button>
+        </td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    content.innerHTML = html;
+
+    document.getElementById('po-form').onsubmit = e => {
+      e.preventDefault();
+      const vendor = e.target['po-vendor'].value.trim();
+      const branch = e.target['po-branch'].value;
+      const date = e.target['po-date'].value || new Date().toISOString().slice(0,10);
+      if (!vendor || !branch) return alert('Vendor and Branch are required');
+      const id = uid();
+      data.purchaseOrders.push({ id, vendor, branch, date, status: 'Open', lines: [] });
+      saveData();
+      renderPOs();
+      openPO(id);
+    };
+
+    content.querySelectorAll('button.small').forEach(btn => {
+      btn.onclick = () => {
+        const id = btn.getAttribute('data-id');
+        const action = btn.getAttribute('data-action');
+        if (action === 'open') openPO(id);
+        else if (action === 'receive') receivePO(id);
+      };
+    });
+  }
+
+  function openPO(id) {
+    const po = data.purchaseOrders.find(p => p.id === id);
+    if (!po) return alert('PO not found');
+    let html = `
+      <h3>Purchase Order ${po.id}</h3>
+      <p><strong>Vendor:</strong> ${po.vendor}</p>
+      <p><strong>Branch:</strong> ${po.branch}</p>
+      <p><strong>Date:</strong> ${po.date}</p>
+      <p><strong>Status:</strong> ${po.status}</p>
+      <h4>Lines</h4>
+      <table>
+        <thead><tr><th>Item</th><th>Qty</th><th>Unit Cost</th><th>Line Total</th><th>Actions</th></tr></thead>
+        <tbody>
+          ${po.lines.map(line => {
+            const item = data.items.find(i => i.id === line.itemId);
+            const itemName = item ? item.name : '(deleted item)';
+            return `<tr>
+              <td>${itemName}</td>
+              <td>${line.qty}</td>
+              <td>$${line.unitCost.toFixed(2)}</td>
+              <td>$${(line.qty * line.unitCost).toFixed(2)}</td>
+              <td><button class="small" data-action="delete-line" data-id="${line.id}">Delete</button></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      <h4>Add Line</h4>
+      <form id="add-po-line-form">
+        <select id="po-line-item" required>
+          <option value="">Select Item</option>
+          ${data.items.map(i => `<option value="${i.id}">${i.sku} - ${i.name}</option>`).join('')}
+        </select>
+        <input type="number" id="po-line-qty" min="1" value="1" required />
+        <input type="number" id="po-line-unitcost" min="0" step="0.01" value="0" required />
+        <button type="submit">Add Line</button>
+      </form>
+      <button id="back-to-pos">Back</button>
+    `;
+    content.innerHTML = html;
+
+    document.getElementById('add-po-line-form').onsubmit = e => {
+      e.preventDefault();
+      const itemId = e.target['po-line-item'].value;
+      const qty = parseInt(e.target['po-line-qty'].value);
+      const unitCost = parseFloat(e.target['po-line-unitcost'].value);
+      if (!itemId || qty < 1 || unitCost < 0) return alert('Valid item, quantity, and unit cost required');
+      po.lines.push({ id: uid(), itemId, qty, unitCost });
+      saveData();
+      openPO(id);
+    };
+
+    content.querySelectorAll('button.small').forEach(btn => {
+      btn.onclick = () => {
+        const lineId = btn.getAttribute('data-id');
+        const action = btn.getAttribute('data-action');
+        if (action === 'delete-line') {
+          const idx = po.lines.findIndex(l => l.id === lineId);
+          if (idx >= 0) {
+            po.lines.splice(idx, 1);
+            saveData();
+            openPO(id);
+          }
+        }
+      };
+    });
+
+    document.getElementById('back-to-pos').onclick = () => renderPOs();
+  }
+
+  function receivePO(id) {
+    const po = data.purchaseOrders.find(p => p.id === id);
+    if (!po) return alert('PO not found');
+    if (po.status !== 'Open') return alert('PO already received');
+    po.lines.forEach(line => {
+      const item = data.items.find(i => i.id === line.itemId);
+      if (item) {
+        if (!item.quantityByLocation) item.quantityByLocation = {};
+        item.quantityByLocation[po.branch] = (item.quantityByLocation[po.branch] || 0) + line.qty;
+      }
+    });
+    po.status = 'Received';
+    saveData();
+    alert('PO received and inventory updated.');
+    renderPOs();
+  }
+
+  function renderTransfers() {
+    let html = `
+      <h2>Transfers Between Branches</h2>
+      <form id="transfer-form">
+        <label>From Branch</label>
+        <select id="transfer-from" required>
+          <option value="">Select branch</option>
+          ${data.locations.map(l => `<option value="${l.id}">${l.id} - ${l.name}</option>`).join('')}
+        </select>
+        <label>To Branch</label>
+        <select id="transfer-to" required>
+          <option value="">Select branch</option>
+          ${data.locations.map(l => `<option value="${l.id}">${l.id} - ${l.name}</option>`).join('')}
+        </select>
+        <label>Item</label>
+        <select id="transfer-item" required>
+          <option value="">Select item</option>
+          ${data.items.map(i => `<option value="${i.id}">${i.sku} - ${i.name}</option>`).join('')}
+        </select>
+        <label>Quantity</label>
+        <input type="number" id="transfer-qty" min="1" value="1" required />
+        <button type="submit">Create Transfer</button>
+      </form>
+      <table>
+        <thead><tr><th>ID</th><th>From</th><th>To</th><th>Item</th><th>Qty</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>
+    `;
+    data.transfers.forEach(t => {
+      const item = data.items.find(i => i.id === t.itemId);
+      const itemName = item ? item.name : '(deleted)';
+      html += `<tr>
+        <td>${t.id}</td>
+        <td>${t.from}</td>
+        <td>${t.to}</td>
+        <td>${itemName}</td>
+        <td>${t.qty}</td>
+        <td>${t.status}</td>
+        <td>
+          ${t.status === 'Pending' ? `<button class="small" data-action="complete" data-id="${t.id}">Complete</button>` : ''}
+        </td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    content.innerHTML = html;
+
+    document.getElementById('transfer-form').onsubmit = e => {
+      e.preventDefault();
+      const from = e.target['transfer-from'].value;
+      const to = e.target['transfer-to'].value;
+      const itemId = e.target['transfer-item'].value;
+      const qty = parseInt(e.target['transfer-qty'].value);
+      if (!from || !to || !itemId || qty < 1) return alert('All fields required with valid quantity');
+      if (from === to) return alert('From and To branches must be different');
+      const item = data.items.find(i => i.id === itemId);
+      if (!item) return alert('Item not found');
+      const fromQty = item.quantityByLocation?.[from] || 0;
+      if (fromQty < qty) return alert(`Not enough quantity at ${from} branch. Available: ${fromQty}`);
+
+      data.transfers.push({ id: uid(), from, to, itemId, qty, status: 'Pending' });
+      saveData();
+      renderTransfers();
+    };
+
+    content.querySelectorAll('button.small').forEach(btn => {
+      btn.onclick = () => {
+        const id = btn.getAttribute('data-id');
+        const action = btn.getAttribute('data-action');
+        if (action === 'complete') completeTransfer(id);
+      };
+    });
+  }
+
+  function completeTransfer(id) {
+    const t = data.transfers.find(tr => tr.id === id);
+    if (!t) return alert('Transfer not found');
+    if (t.status !== 'Pending') return alert('Transfer already completed');
+    const item = data.items.find(i => i.id === t.itemId);
+    if (!item) return alert('Item not found');
+    const fromQty = item.quantityByLocation?.[t.from] || 0;
+    if (fromQty < t.qty) return alert(`Not enough quantity at ${t.from} branch. Available: ${fromQty}`);
+
+    item.quantityByLocation[t.from] -= t.qty;
+    item.quantityByLocation[t.to] = (item.quantityByLocation[t.to] || 0) + t.qty;
+    t.status = 'Completed';
+    saveData();
+    renderTransfers();
+  }
+
+  function renderAccounting() {
+    let payableByVendor = {};
+    data.purchaseOrders.forEach(po => {
+      if (po.status === 'Open' || po.status === 'Received') {
+        po.lines.forEach(line => {
+          payableByVendor[po.vendor] = (payableByVendor[po.vendor] || 0) + (line.qty * line.unitCost);
+        });
+      }
+    });
+    let html = `
+      <h2>Accounting - Accounts Payable</h2>
+      <table>
+        <thead><tr><th>Vendor</th><th>Amount Owed</th></tr></thead>
+        <tbody>
+          ${Object.entries(payableByVendor).map(([vendor, amt]) => `
+            <tr><td>${vendor}</td><td>$${amt.toFixed(2)}</td></tr>
+          `).join('') || '<tr><td colspan="2"><em>No accounts payable</em></td></tr>'}
+        </tbody>
+      </table>
+    `;
+    content.innerHTML = html;
+  }
+
+  function render() {
+    switch(currentView) {
+      case 'dashboard': renderDashboard(); break;
+      case 'items': renderItems(); break;
+      case 'locations': renderLocations(); break;
+      case 'pos': renderPOs(); break;
+      case 'transfers': renderTransfers(); break;
+      case 'accounting': renderAccounting(); break;
+    }
+  }
+
+  Object.entries(navButtons).forEach(([key, btn]) => {
+    btn.onclick = () => switchView(key);
+  });
+
+  render();
+})();
+</script>
+
+</body>
+</html>
